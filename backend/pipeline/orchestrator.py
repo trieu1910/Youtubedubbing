@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import config
-from pipeline import asr, download, mix, segments, separate, timefit, translate, tts
+from pipeline import asr, captions, download, mix, segments, separate, timefit, translate, tts
 
 
 def run_pipeline(job, api_key=None):
@@ -19,12 +19,20 @@ def run_pipeline(job, api_key=None):
         job.emit("download", 5, "Đang tải audio...")
         source = download.download_audio(vid, jd)
 
-        job.emit("asr", 20, "Đang nhận dạng giọng nói (Whisper)...")
-        tr = asr.transcribe(source)
-        segs = tr["segments"]
-        if not segs:
-            raise RuntimeError("Không nhận dạng được lời thoại trong video.")
-        asr.unload()  # free VRAM before Demucs
+        # Prefer existing YouTube captions (manual or auto) to skip the heavy
+        # Whisper step. Fall back to ASR only when no usable caption exists.
+        job.emit("captions", 15, "Đang kiểm tra phụ đề có sẵn trên YouTube...")
+        segs = captions.get_captions(vid)
+        if segs:
+            job.emit("captions", 35,
+                     f"Dùng phụ đề có sẵn ({len(segs)} câu) — bỏ qua nhận dạng giọng nói")
+        else:
+            job.emit("asr", 20, "Không có phụ đề — đang nhận dạng giọng nói (Whisper)...")
+            tr = asr.transcribe(source)
+            segs = tr["segments"]
+            if not segs:
+                raise RuntimeError("Không có phụ đề và không nhận dạng được lời thoại trong video.")
+            asr.unload()  # free VRAM before Demucs
 
         job.emit("separate", 40, "Đang tách nhạc nền (Demucs)...")
         background = separate.separate_background(source, jd / "sep")
