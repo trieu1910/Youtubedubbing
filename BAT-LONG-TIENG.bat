@@ -8,15 +8,22 @@ echo            YOUTUBE AI LONG TIENG  -  KHOI DONG
 echo ============================================================
 echo.
 
-rem --- Lan dau chua co moi truong thi tu dong cai dat ---
-if not exist "venv\Scripts\python.exe" (
-  echo [LAN DAU] Chua co moi truong Python. Dang cai dat...
-  echo Buoc nay chi chay 1 lan, co the mat vai phut. Vui long doi.
+rem --- Kiem tra moi truong + thu vien nang; thieu thi tu dong cai ---
+set NEED_INSTALL=0
+if not exist "venv\Scripts\python.exe" set NEED_INSTALL=1
+if "%NEED_INSTALL%"=="0" (
+  venv\Scripts\python.exe -c "import torch, demucs, faster_whisper, yt_dlp, edge_tts, pydub" 1>nul 2>nul
+  if errorlevel 1 set NEED_INSTALL=1
+)
+if "%NEED_INSTALL%"=="1" (
+  echo [CAI DAT] Dang cai cac thu vien can thiet, co the mat vai phut...
+  echo Vui long doi, KHONG dong cua so.
   echo.
   powershell -ExecutionPolicy Bypass -File "%~dp0backend\install.ps1"
   echo.
-  if not exist "venv\Scripts\python.exe" (
-    echo [LOI] Cai dat that bai. Hay chay backend\install.ps1 thu cong de xem loi.
+  venv\Scripts\python.exe -c "import torch, demucs, faster_whisper, yt_dlp, edge_tts, pydub" 1>nul 2>nul
+  if errorlevel 1 (
+    echo [LOI] Van con thieu thu vien sau khi cai. Hay chay backend\install.ps1 thu cong de xem loi.
     pause
     exit /b 1
   )
