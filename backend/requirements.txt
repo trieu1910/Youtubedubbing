@@ -1,0 +1,11 @@
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+yt-dlp>=2024.10.0
+faster-whisper==1.0.*
+demucs==4.0.*
+edge-tts==6.1.*
+google-generativeai==0.8.*
+pydub==0.25.*
+requests==2.32.*
+pytest==8.*
+# PyTorch with CUDA is installed separately in install.ps1 (correct CUDA wheel)
