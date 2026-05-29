@@ -144,10 +144,10 @@ function attachDubAudio(videoId) {
   }, 500);
 }
 
-function onPlay() { if (dubAudio) { dubAudio.currentTime = getVideo().currentTime; dubAudio.play().catch(() => {}); } }
+function onPlay() { const v = getVideo(); if (dubAudio && v) { try { dubAudio.currentTime = v.currentTime; } catch {} dubAudio.play().catch(() => {}); } }
 function onPause() { if (dubAudio) dubAudio.pause(); }
-function onSeek() { if (dubAudio) { try { dubAudio.currentTime = getVideo().currentTime; } catch {} } }
-function onRate() { if (dubAudio) dubAudio.playbackRate = getVideo().playbackRate; }
+function onSeek() { const v = getVideo(); if (dubAudio && v) { try { dubAudio.currentTime = v.currentTime; } catch {} } }
+function onRate() { const v = getVideo(); if (dubAudio && v) dubAudio.playbackRate = v.playbackRate; }
 
 function detachDubAudio() {
   const video = getVideo();
