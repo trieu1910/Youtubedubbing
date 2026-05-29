@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -9,7 +10,7 @@ def download_audio(video_id: str, out_dir: Path) -> Path:
         return existing[0]
     url = f"https://www.youtube.com/watch?v={video_id}"
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", "bestaudio/best",
         "-x", "--audio-format", "m4a",
         "--no-playlist",
