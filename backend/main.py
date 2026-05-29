@@ -1,4 +1,5 @@
 import json
+import threading
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,6 @@ from pydantic import BaseModel
 import config
 import jobs
 from pipeline.orchestrator import run_pipeline
-import threading
 
 app = FastAPI(title="YouTube AI Dubbing Backend")
 
@@ -24,6 +24,7 @@ class DubRequest(BaseModel):
     videoId: str
     lang: str = "vi"
     geminiApiKey: str | None = None
+    startAt: float = 0.0
 
 
 @app.get("/health")
@@ -43,16 +44,16 @@ def health():
 
 @app.post("/dub")
 def dub(req: DubRequest):
-    out = config.output_path(req.videoId, req.lang)
-    if out.exists():
-        return {"status": "done", "cached": True}
+    # A previously completed job is always re-run through the pipeline, which
+    # replays the cached segments instantly when present.
     job, created = jobs.get_or_create(req.videoId, req.lang)
     if created:
         job.thread = threading.Thread(
-            target=run_pipeline, args=(job, req.geminiApiKey), daemon=True
+            target=run_pipeline, args=(job, req.geminiApiKey, req.startAt), daemon=True
         )
         job.thread.start()
-    return {"status": "running", "cached": False}
+    cached = config.segments_path(req.videoId, req.lang).exists()
+    return {"status": "running", "cached": cached}
 
 
 @app.get("/progress/{video_id}/{lang}")
@@ -61,18 +62,22 @@ def progress(video_id: str, lang: str):
 
     def stream():
         if job is None:
-            out = config.output_path(video_id, lang)
-            status = "done" if out.exists() else "error"
-            yield f"data: {json.dumps({'status': status})}\n\n"
+            # No live job: replay cached segments if we have them, else error.
+            sp = config.segments_path(video_id, lang)
+            if sp.exists():
+                try:
+                    for meta in json.loads(sp.read_text(encoding="utf-8")):
+                        yield f"data: {json.dumps({'type': 'segment', **meta}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'status': 'done'})}\n\n"
+                    return
+                except Exception:
+                    pass
+            yield f"data: {json.dumps({'status': 'error', 'error': 'no job'})}\n\n"
             return
         while True:
             try:
                 item = job.queue.get(timeout=120)
             except Exception:
-                # No item within the window. If the job already terminated
-                # (e.g. it crashed before emitting a terminal event, or a client
-                # reconnected after the queue was drained), emit a terminal event
-                # so the client never blocks forever; otherwise send a heartbeat.
                 if job.status in ("done", "error"):
                     yield f"data: {json.dumps({'status': job.status, 'error': job.error}, ensure_ascii=False)}\n\n"
                     break
@@ -85,17 +90,27 @@ def progress(video_id: str, lang: str):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@app.get("/audio/{video_id}/{lang}")
-def audio(video_id: str, lang: str, request: Request):
-    out = config.output_path(video_id, lang)
-    if not out.exists():
+@app.get("/segments/{video_id}/{lang}")
+def segments(video_id: str, lang: str):
+    sp = config.segments_path(video_id, lang)
+    if not sp.exists():
+        return {"segments": []}
+    try:
+        return {"segments": json.loads(sp.read_text(encoding="utf-8"))}
+    except Exception:
+        return {"segments": []}
+
+
+@app.get("/clip/{video_id}/{lang}/{index}")
+def clip(video_id: str, lang: str, index: int, request: Request):
+    path = config.clip_path(video_id, lang, index)
+    if not path.exists():
         return {"error": "not ready"}
 
-    file_size = out.stat().st_size
+    file_size = path.stat().st_size
     range_header = request.headers.get("range")
 
     if range_header:
-        # Parse "bytes=start-end"
         start, end = 0, file_size - 1
         try:
             _units, rng = range_header.split("=", 1)
@@ -113,7 +128,7 @@ def audio(video_id: str, lang: str, request: Request):
         length = end - start + 1
 
         def iter_range():
-            with open(out, "rb") as f:
+            with open(path, "rb") as f:
                 f.seek(start)
                 remaining = length
                 chunk_size = 64 * 1024
@@ -130,11 +145,8 @@ def audio(video_id: str, lang: str, request: Request):
             "Content-Length": str(length),
         }
         return StreamingResponse(
-            iter_range(), status_code=206, media_type="audio/mp4", headers=headers
+            iter_range(), status_code=206, media_type="audio/wav", headers=headers
         )
 
-    return FileResponse(
-        str(out),
-        media_type="audio/mp4",
-        headers={"Accept-Ranges": "bytes"},
-    )
+    return FileResponse(str(path), media_type="audio/wav",
+                        headers={"Accept-Ranges": "bytes"})

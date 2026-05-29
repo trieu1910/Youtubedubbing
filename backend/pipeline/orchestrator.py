@@ -1,83 +1,123 @@
-from pathlib import Path
+import json
 
 import config
-from pipeline import asr, captions, download, mix, segments, separate, timefit, translate, tts
+from pipeline import asr, captions, download, segments, timefit, translate, tts
 
 
-def run_pipeline(job, api_key=None):
-    """Full dubbing pipeline. Emits progress on the job. Writes output.m4a."""
+def _build_clip(vid, lang, idx, seg, next_start):
+    """TTS one segment, time-fit it to its window, save as clip {idx}.wav.
+    Returns segment metadata dict, or None if there is no text."""
+    text = (seg.get("translatedText") or "").strip()
+    if not text:
+        return None
+    cdir = config.clips_dir(vid, lang)
+    raw = cdir / f"{idx}.mp3"
+    tts.synth_segment(text, lang, raw)
+    actual = tts.measure_duration(raw)
+    target = timefit.target_duration(seg, next_start, config.GAP_BORROW_MAX)
+    fit = timefit.compute_fit(actual, target, config.MAX_SPEEDUP,
+                              config.FIT_LOW, config.FIT_HIGH)
+    timefit.apply_fit(raw, config.clip_path(vid, lang, idx), fit["atempo"], fit["pad"])
+    return {
+        "index": idx,
+        "start": round(seg["start"], 3),
+        "end": round(seg["end"], 3),
+        "text": text,
+        "clip": f"/clip/{vid}/{lang}/{idx}",
+    }
+
+
+def _replay_cache(job, vid, lang):
+    """If this video+lang was already processed, re-emit all segments instantly."""
+    sp = config.segments_path(vid, lang)
+    if not sp.exists():
+        return False
+    try:
+        cached = json.loads(sp.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not cached:
+        return False
+    # Only trust the cache if the clip files are still present.
+    if not config.clip_path(vid, lang, cached[0]["index"]).exists():
+        return False
+    job.emit("cache", 100, f"Dùng bản lồng tiếng đã lưu ({len(cached)} câu)")
+    for meta in cached:
+        job.emit_segment(meta)
+    job.finish("done")
+    return True
+
+
+def run_pipeline(job, api_key=None, start_at=0.0):
+    """Streaming dubbing pipeline. No Demucs: the extension lowers the original
+    audio and plays per-segment TTS clips over it. Segments are translated and
+    synthesized in small chunks and emitted as soon as each is ready, so playback
+    can start almost immediately. Processing begins near `start_at` (the current
+    playback position) so clicking mid-video is responsive."""
     job.status = "running"
     vid, lang = job.video_id, job.lang
-    jd = config.job_dir(vid, lang)
-    out = config.output_path(vid, lang)
-
-    if out.exists():
-        job.finish("done")
-        return
 
     try:
-        job.emit("download", 5, "Đang tải audio...")
-        source = download.download_audio(vid, jd)
+        if _replay_cache(job, vid, lang):
+            return
 
-        # Prefer existing YouTube captions (manual or auto) to skip the heavy
-        # Whisper step. Fall back to ASR only when no usable caption exists.
-        job.emit("captions", 15, "Đang kiểm tra phụ đề có sẵn trên YouTube...")
+        # 1) Transcript: prefer existing YouTube captions; fall back to Whisper.
+        job.emit("captions", 8, "Đang lấy phụ đề YouTube...")
         segs = captions.get_captions(vid)
         if segs:
-            job.emit("captions", 35,
-                     f"Dùng phụ đề có sẵn ({len(segs)} câu) — bỏ qua nhận dạng giọng nói")
+            job.emit("captions", 18, f"Dùng phụ đề có sẵn ({len(segs)} câu)")
         else:
-            job.emit("asr", 20, "Không có phụ đề — đang nhận dạng giọng nói (Whisper)...")
-            tr = asr.transcribe(source)
-            segs = tr["segments"]
+            job.emit("download", 10, "Không có phụ đề — đang tải audio cho nhận dạng...")
+            source = download.download_audio(vid, config.job_dir(vid, lang))
+            job.emit("asr", 18, "Đang nhận dạng giọng nói (Whisper)...")
+            segs = asr.transcribe(source)["segments"]
+            asr.unload()
             if not segs:
-                raise RuntimeError("Không có phụ đề và không nhận dạng được lời thoại trong video.")
-            asr.unload()  # free VRAM before Demucs
+                raise RuntimeError("Không có phụ đề và không nhận dạng được lời thoại.")
 
-        job.emit("separate", 40, "Đang tách nhạc nền (Demucs)...")
-        background = separate.separate_background(source, jd / "sep")
-
-        job.emit("segments", 45, "Đang chuẩn hoá câu...")
-        segs = segments.merge_and_split(
-            segs, config.MERGE_MIN_DUR, config.SPLIT_MAX_DUR
-        )
-
-        job.emit("translate", 55, "Đang dịch (Gemini)...")
-        segs = translate.translate_segments(
-            segs, lang, api_key,
-            progress=lambda p: job.emit("translate", 55 + int(p * 15),
-                                        "Đang dịch (Gemini)..."),
-        )
-
-        job.emit("tts", 72, "Đang tạo giọng đọc (Edge-TTS)...")
-        clips_dir = jd / "clips"
-        clips_dir.mkdir(exist_ok=True)
-        fitted_clips = []  # (path, start_s)
+        # 2) Normalise sentences.
+        segs = segments.merge_and_split(segs, config.MERGE_MIN_DUR, config.SPLIT_MAX_DUR)
         n = len(segs)
-        for i, s in enumerate(segs):
-            text = (s.get("translatedText") or "").strip()
-            if not text:
-                continue
-            raw = clips_dir / f"{i}.mp3"
-            tts.synth_segment(text, lang, raw)
-            actual = tts.measure_duration(raw)
-            next_start = segs[i + 1]["start"] if i + 1 < n else None
-            target = timefit.target_duration(s, next_start, config.GAP_BORROW_MAX)
-            fit = timefit.compute_fit(actual, target, config.MAX_SPEEDUP,
-                                      config.FIT_LOW, config.FIT_HIGH)
-            fitted = clips_dir / f"{i}_fit.wav"
-            timefit.apply_fit(raw, fitted, fit["atempo"], fit["pad"])
-            fitted_clips.append((fitted, s["start"]))
-            if i % 5 == 0:
-                job.emit("tts", 72 + int((i / max(1, n)) * 16),
-                         f"Đang tạo giọng đọc {i+1}/{n}...")
+        if n == 0:
+            raise RuntimeError("Không có câu nào để lồng tiếng.")
 
-        job.emit("mix", 90, "Đang trộn nhạc nền + giọng...")
-        total = max((s["end"] for s in segs), default=0.0)
-        voice_track = mix.build_voice_track(fitted_clips, total, jd / "voice.wav")
-        mix.mix_with_ducking(background, voice_track, out)
+        # 3) Stream: translate + TTS in chunks (small first chunk for fast start),
+        #    emit each ready segment immediately. Process from the current playback
+        #    position to the end first, then wrap around to the earlier part.
+        order = list(range(n))
+        if start_at and start_at > 0:
+            si = next((k for k, s in enumerate(segs) if s["end"] >= start_at), 0)
+            order = list(range(si, n)) + list(range(0, si))
 
-        job.emit("done", 100, "Hoàn tất!")
+        produced = []
+        pos = 0
+        first = True
+        done = 0
+        while pos < len(order):
+            size = config.FIRST_CHUNK if first else config.NEXT_CHUNK
+            first = False
+            idxs = order[pos:pos + size]
+            chunk = [segs[k] for k in idxs]
+            translate.translate_segments(chunk, lang, api_key)
+            for k, seg in zip(idxs, chunk):
+                next_start = segs[k + 1]["start"] if k + 1 < n else None
+                meta = _build_clip(vid, lang, k, seg, next_start)
+                done += 1
+                if meta is None:
+                    continue
+                produced.append(meta)
+                job.emit_segment(meta)
+                job.emit("tts", min(99, 20 + int(done / n * 79)),
+                         f"Đang lồng tiếng {done}/{n}...")
+            pos += size
+
+        if not produced:
+            raise RuntimeError("Không tạo được giọng lồng tiếng (transcript rỗng?).")
+
+        produced.sort(key=lambda m: m["index"])
+        config.segments_path(vid, lang).write_text(
+            json.dumps(produced, ensure_ascii=False), encoding="utf-8"
+        )
         job.finish("done")
     except Exception as e:
         job.finish("error", str(e))

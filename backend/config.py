@@ -38,6 +38,11 @@ DEFAULT_VOICE = "vi-VN-HoaiMyNeural"
 
 # Output
 OUTPUT_EXT = "m4a"
+CLIP_EXT = "wav"
+
+# Streaming: small first chunk for instant start, larger chunks afterwards.
+FIRST_CHUNK = 4
+NEXT_CHUNK = 16
 
 
 def cache_key(video_id: str, lang: str) -> str:
@@ -52,3 +57,17 @@ def job_dir(video_id: str, lang: str) -> Path:
 
 def output_path(video_id: str, lang: str) -> Path:
     return job_dir(video_id, lang) / f"output.{OUTPUT_EXT}"
+
+
+def segments_path(video_id: str, lang: str) -> Path:
+    return job_dir(video_id, lang) / "segments.json"
+
+
+def clips_dir(video_id: str, lang: str) -> Path:
+    d = job_dir(video_id, lang) / "clips"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def clip_path(video_id: str, lang: str, index: int) -> Path:
+    return clips_dir(video_id, lang) / f"{index}.{CLIP_EXT}"

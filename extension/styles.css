@@ -13,3 +13,4 @@
 #yt-dub-overlay .status { font-size: 12px; margin-top: 6px; min-height: 16px; }
 #yt-dub-overlay input[type=range] { width: 120px; accent-color: #ff0000; }
 #yt-dub-overlay .close { position: absolute; top: 8px; right: 10px; cursor: pointer; background: none; width: auto; padding: 0; font-size: 16px; }
+#yt-dub-overlay .ytd-sub { margin-top: 10px; font-size: 13px; line-height: 1.4; color: #ffd400; min-height: 18px; max-height: 72px; overflow: hidden; }

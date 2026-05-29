@@ -21,7 +21,21 @@ Backend lắng nghe tại http://localhost:8788. Kiểm tra: mở http://localho
 Vào `chrome://extensions`, bật Developer mode, "Load unpacked" → chọn thư mục `extension/`.
 Mở popup, (tuỳ chọn) nhập Gemini API key, bấm "Kiểm tra backend".
 
+## Cách hoạt động (chế độ streaming nhanh)
+1. Lấy transcript: ưu tiên **phụ đề YouTube có sẵn** (nhanh, không cần GPU). Chỉ khi
+   không có phụ đề mới tải audio + chạy **Whisper** (ASR).
+2. Dịch (Gemini, fallback Google free) + tạo giọng **Edge-TTS** theo từng cụm câu,
+   bắt đầu từ vị trí đang xem. Mỗi câu được co giãn cho khớp khung thời gian.
+3. Extension **hạ nhỏ tiếng gốc** (~12%) và phát từng clip lồng tiếng đúng mốc thời gian.
+   → Bắt đầu nghe gần như tức thì, vừa xem vừa nạp.
+
+Không dùng Demucs (không tách nhạc nền) để đạt tốc độ tối đa. Bạn nghe lồng tiếng
+đè lên audio gốc đã được hạ nhỏ (vẫn còn nhạc nền). Chỉnh "Âm lượng gốc" / "Âm lượng
+lồng tiếng" trong bảng điều khiển trên trang video.
+
 ## Ghi chú
-- Lần chạy đầu tải model Whisper large-v3 (~3GB) và Demucs (~1GB).
-- Nếu GPU hết VRAM ở bước Demucs: giảm `DEMUCS_SEGMENT` trong `config.py` xuống 5.
-- Kết quả được cache tại `backend/cache/{videoId}_{lang}/output.m4a`.
+- Chỉ video **không có phụ đề** mới cần Whisper (lần đầu tải model large-v3 ~3GB).
+- Kết quả được cache theo câu tại `backend/cache/{videoId}_{lang}/` (clips + segments.json),
+  xem lại là phát ngay.
+- `separate.py` / `mix.py` (Demucs + trộn nhạc nền) còn lại để dành cho chế độ
+  "chất lượng cao" sau này, hiện không dùng trong luồng mặc định.

@@ -17,6 +17,10 @@ class Job:
     def emit(self, stage, percent, message=""):
         self.queue.put({"stage": stage, "percent": percent, "message": message})
 
+    def emit_segment(self, seg):
+        # seg: {index, start, end, text, clip}
+        self.queue.put({"type": "segment", **seg})
+
     def finish(self, status, error=None):
         self.status = status
         self.error = error
