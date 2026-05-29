@@ -1,0 +1,6 @@
+YouTube-AI-Translator/
+backend/cache/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/venv/
