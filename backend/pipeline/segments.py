@@ -1,6 +1,32 @@
 import re
 
 _SENT_SPLIT = re.compile(r'(?<=[.!?…])\s+')
+_SENT_END = re.compile(r'[.!?…]["\')\]]?$')
+
+
+def group_sentences(segments, max_dur=8.0):
+    """Join caption fragments into sentence-level clips for natural, non-choppy
+    delivery: accumulate fragments until the text ends a sentence OR the clip
+    reaches `max_dur` seconds. Keeps the original start/end span."""
+    out = []
+    cur = None
+    for s in segments:
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        if cur is None:
+            cur = {"start": s["start"], "end": s["end"], "text": text}
+        else:
+            cur["end"] = s["end"]
+            cur["text"] = (cur["text"] + " " + text).strip()
+        ends_sentence = bool(_SENT_END.search(cur["text"]))
+        long_enough = (cur["end"] - cur["start"]) >= max_dur
+        if ends_sentence or long_enough:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    return out
 
 
 def _split_sentences(text):

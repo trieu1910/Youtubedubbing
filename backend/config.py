@@ -38,10 +38,19 @@ DEFAULT_VOICE = "vi-VN-HoaiMyNeural"
 
 # Output
 OUTPUT_EXT = "m4a"
-CLIP_EXT = "wav"
+CLIP_EXT = "mp3"   # Edge-TTS native; played directly, no re-encode
+
+# Consistent speaking rate (Edge-TTS prosody). A uniform mild speed-up keeps the
+# Vietnamese (longer than English) on pace WITHOUT the choppy per-segment tempo
+# changes that time-stretching caused.
+TTS_RATE = "+15%"
+
+# Group caption fragments into sentence-level clips up to this length (seconds)
+# for natural, non-choppy delivery.
+GROUP_MAX_DUR = 8.0
 
 # Streaming: small first chunk for instant start, larger chunks afterwards.
-FIRST_CHUNK = 4
+FIRST_CHUNK = 3
 NEXT_CHUNK = 16
 
 

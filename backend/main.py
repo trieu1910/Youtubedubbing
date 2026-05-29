@@ -145,8 +145,8 @@ def clip(video_id: str, lang: str, index: int, request: Request):
             "Content-Length": str(length),
         }
         return StreamingResponse(
-            iter_range(), status_code=206, media_type="audio/wav", headers=headers
+            iter_range(), status_code=206, media_type="audio/mpeg", headers=headers
         )
 
-    return FileResponse(str(path), media_type="audio/wav",
+    return FileResponse(str(path), media_type="audio/mpeg",
                         headers={"Accept-Ranges": "bytes"})

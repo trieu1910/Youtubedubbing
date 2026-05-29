@@ -1,23 +1,17 @@
 import json
 
 import config
-from pipeline import asr, captions, download, segments, timefit, translate, tts
+from pipeline import asr, captions, download, segments, translate, tts
 
 
 def _build_clip(vid, lang, idx, seg, next_start):
-    """TTS one segment, time-fit it to its window, save as clip {idx}.wav.
-    Returns segment metadata dict, or None if there is no text."""
+    """TTS one segment at the natural consistent rate (no time-stretching — that
+    is what caused choppiness). Save as clip {idx}.mp3. The extension plays clips
+    sequentially over the ducked original. Returns metadata, or None if no text."""
     text = (seg.get("translatedText") or "").strip()
     if not text:
         return None
-    cdir = config.clips_dir(vid, lang)
-    raw = cdir / f"{idx}.mp3"
-    tts.synth_segment(text, lang, raw)
-    actual = tts.measure_duration(raw)
-    target = timefit.target_duration(seg, next_start, config.GAP_BORROW_MAX)
-    fit = timefit.compute_fit(actual, target, config.MAX_SPEEDUP,
-                              config.FIT_LOW, config.FIT_HIGH)
-    timefit.apply_fit(raw, config.clip_path(vid, lang, idx), fit["atempo"], fit["pad"])
+    tts.synth_segment(text, lang, config.clip_path(vid, lang, idx))
     return {
         "index": idx,
         "start": round(seg["start"], 3),
@@ -75,8 +69,8 @@ def run_pipeline(job, api_key=None, start_at=0.0):
             if not segs:
                 raise RuntimeError("Không có phụ đề và không nhận dạng được lời thoại.")
 
-        # 2) Normalise sentences.
-        segs = segments.merge_and_split(segs, config.MERGE_MIN_DUR, config.SPLIT_MAX_DUR)
+        # 2) Group caption fragments into sentence-level clips for smooth delivery.
+        segs = segments.group_sentences(segs, config.GROUP_MAX_DUR)
         n = len(segs)
         if n == 0:
             raise RuntimeError("Không có câu nào để lồng tiếng.")

@@ -7,9 +7,15 @@ let isDubActive = false;
 const clipsByIndex = new Map();   // index -> {index, start, end, text, clip}
 let sortedClips = [];             // sorted by start, rebuilt as clips arrive
 let clipAudio = null;             // single reusable <audio> for the active clip
-let activeIndex = -1;             // segment currently sounding (-1 = none)
 let scheduler = null;             // setInterval id
 let sseSource = null;
+
+// Sequential player state: speak clips one at a time, never overlapping, never
+// cutting. Wait during pauses; play back-to-back to catch up when behind.
+let lastStart = -1;               // start-time of the last clip we began speaking
+let speaking = false;             // a clip is currently playing
+const SPEAK_LOOKAHEAD = 0.25;     // begin a clip once the video reaches its start
+const MAX_LAG = 4.0;              // if the dub falls this far behind, skip ahead
 
 let DUB_VOLUME = 1.0;
 let ORIGINAL_VOLUME = 0.12;       // duck the original audio under the dub
@@ -94,6 +100,8 @@ async function startDubbing() {
   if (video) { video.muted = false; video.volume = ORIGINAL_VOLUME; }
   clipAudio = new Audio();
   clipAudio.volume = DUB_VOLUME;
+  clipAudio.addEventListener("ended", () => { speaking = false; trySpeakNext(); });
+  clipAudio.addEventListener("error", () => { speaking = false; });
   // Unlock autoplay within the user gesture by playing a tiny silent clip.
   try { clipAudio.src = SILENT_WAV; clipAudio.play().catch(() => {}); } catch {}
 
@@ -176,61 +184,72 @@ function addClip(seg) {
   }
 }
 
-// ---------- Scheduler: play the clip matching the current playback time ----------
-function findSegmentAt(t) {
-  // latest segment whose start <= t and whose window hasn't fully passed
+// ---------- Sequential player ----------
+function startScheduler() {
+  if (scheduler) return;
+  scheduler = setInterval(trySpeakNext, 120);
+}
+
+function nextSegmentToSpeak() {
+  for (const s of sortedClips) {
+    if (s.start > lastStart + 0.001) return s;  // sortedClips is ascending by start
+  }
+  return null;
+}
+
+function latestSegmentAtOrBefore(t) {
   let found = null;
   for (const s of sortedClips) {
-    if (s.start <= t + 0.05) {
-      if (t < s.end + 0.4) found = s; // within window (+grace)
-    } else break;
+    if (s.start <= t + 0.05) found = s; else break;
   }
   return found;
 }
 
-function startScheduler() {
-  if (scheduler) return;
-  scheduler = setInterval(tick, 150);
-}
-
-function tick() {
-  if (!isDubActive) return;
+function trySpeakNext() {
+  if (!isDubActive || !clipAudio || speaking) return;
   const video = getVideo();
-  if (!video || !clipAudio) return;
-
-  if (video.paused || video.seeking) {
-    if (!clipAudio.paused) clipAudio.pause();
-    return;
-  }
+  if (!video || video.paused || video.seeking) return;
 
   const t = video.currentTime;
-  const seg = findSegmentAt(t);
-  if (!seg) return;
+  let next = nextSegmentToSpeak();
+  if (!next) return;
 
-  if (seg.index !== activeIndex) {
-    activeIndex = seg.index;
-    showSub(seg.text);
-    const offset = Math.max(0, t - seg.start);
-    clipAudio.src = `${cfg.backendUrl}${seg.clip}`;
-    clipAudio.volume = DUB_VOLUME;
-    clipAudio.playbackRate = video.playbackRate || 1;
-    const playFrom = () => {
-      clipAudio.removeEventListener("loadedmetadata", playFrom);
-      try { if (offset > 0.15) clipAudio.currentTime = offset; } catch {}
-      clipAudio.play().catch(() => {});
-    };
-    clipAudio.addEventListener("loadedmetadata", playFrom);
-    clipAudio.load();
+  // The next sentence hasn't started yet in the video (a pause) → wait so the
+  // dub re-aligns naturally instead of running ahead.
+  if (next.start > t + SPEAK_LOOKAHEAD) return;
+
+  // Falling too far behind (continuous fast speech) → skip ahead to "now".
+  if (next.start < t - MAX_LAG) {
+    const jump = latestSegmentAtOrBefore(t);
+    if (jump && jump.start > lastStart) next = jump;
+  }
+
+  lastStart = next.start;
+  speaking = true;
+  showSub(next.text);
+  clipAudio.src = `${cfg.backendUrl}${next.clip}`;
+  clipAudio.volume = DUB_VOLUME;
+  clipAudio.playbackRate = video.playbackRate || 1;
+  clipAudio.play().catch(() => { speaking = false; });
+}
+
+function onVideoPause() {
+  if (clipAudio && !clipAudio.paused) { try { clipAudio.pause(); } catch {} }
+}
+
+function onVideoPlay() {
+  // Resume the in-progress clip if we paused mid-sentence; else start the next.
+  if (speaking && clipAudio && clipAudio.paused && clipAudio.src) {
+    clipAudio.play().catch(() => { speaking = false; });
   } else {
-    if (clipAudio.paused) clipAudio.play().catch(() => {});
-    const rate = video.playbackRate || 1;
-    if (clipAudio.playbackRate !== rate) clipAudio.playbackRate = rate;
+    trySpeakNext();
   }
 }
 
 function onSeeking() {
-  // Stop current clip; the scheduler will pick the right one for the new time.
-  activeIndex = -1;
+  // Stop the current clip and re-pick from the new position next tick.
+  speaking = false;
+  lastStart = -1;
   if (clipAudio) { try { clipAudio.pause(); } catch {} }
   showSub("");
 }
@@ -244,7 +263,8 @@ function resetDub() {
   if (clipAudio) { try { clipAudio.pause(); } catch {} clipAudio.src = ""; clipAudio = null; }
   clipsByIndex.clear();
   sortedClips = [];
-  activeIndex = -1;
+  lastStart = -1;
+  speaking = false;
   const video = getVideo();
   if (video) video.volume = 1.0;  // restore original audio
   isDubActive = false;
@@ -269,6 +289,8 @@ function attachVideoListeners() {
   if (!video || video.__ytDubHooked) return;
   video.__ytDubHooked = true;
   video.addEventListener("seeking", onSeeking);
+  video.addEventListener("pause", onVideoPause);
+  video.addEventListener("play", onVideoPlay);
 }
 
 (async function init() {
