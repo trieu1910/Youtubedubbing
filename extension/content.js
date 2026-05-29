@@ -14,6 +14,12 @@ let sseSource = null;
 let DUB_VOLUME = 1.0;
 let ORIGINAL_VOLUME = 0.12;       // duck the original audio under the dub
 
+let waitingFirstClip = false;     // pause video until the first dubbed clip is ready
+let firstStartAt = 0;
+let firstClipTimer = null;
+// 0.05s of silence — played on the user's click to unlock browser autoplay.
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
 function getVideoId() { return new URLSearchParams(location.search).get("v"); }
 function getVideo() { return document.querySelector("video"); }
 
@@ -88,6 +94,23 @@ async function startDubbing() {
   if (video) { video.muted = false; video.volume = ORIGINAL_VOLUME; }
   clipAudio = new Audio();
   clipAudio.volume = DUB_VOLUME;
+  // Unlock autoplay within the user gesture by playing a tiny silent clip.
+  try { clipAudio.src = SILENT_WAV; clipAudio.play().catch(() => {}); } catch {}
+
+  // Pause until the first dubbed clip is ready, then resume aligned to it
+  // (so the very first sentences are never skipped while processing catches up).
+  waitingFirstClip = true;
+  firstStartAt = startAt;
+  if (video && !video.paused) video.pause();
+  setStatus("Đang chuẩn bị câu đầu tiên...", 2);
+  if (firstClipTimer) clearTimeout(firstClipTimer);
+  firstClipTimer = setTimeout(() => {
+    if (waitingFirstClip) {
+      waitingFirstClip = false;
+      const v = getVideo();
+      if (v) v.play().catch(() => {});
+    }
+  }, 25000);
 
   try {
     const r = await fetch(`${cfg.backendUrl}/dub`, {
@@ -139,6 +162,18 @@ function addClip(seg) {
   clipsByIndex.set(seg.index, seg);
   sortedClips.push(seg);
   sortedClips.sort((a, b) => a.start - b.start);
+
+  // First clip ready → align the video to it and resume playback.
+  if (waitingFirstClip) {
+    waitingFirstClip = false;
+    if (firstClipTimer) { clearTimeout(firstClipTimer); firstClipTimer = null; }
+    const v = getVideo();
+    if (v) {
+      const target = sortedClips[0];
+      try { if (Math.abs(v.currentTime - target.start) > 1.0) v.currentTime = target.start; } catch {}
+      v.play().catch(() => {});
+    }
+  }
 }
 
 // ---------- Scheduler: play the clip matching the current playback time ----------
@@ -203,6 +238,8 @@ function onSeeking() {
 // ---------- Teardown ----------
 function resetDub() {
   if (scheduler) { clearInterval(scheduler); scheduler = null; }
+  if (firstClipTimer) { clearTimeout(firstClipTimer); firstClipTimer = null; }
+  waitingFirstClip = false;
   if (sseSource) { try { sseSource.close(); } catch {} sseSource = null; }
   if (clipAudio) { try { clipAudio.pause(); } catch {} clipAudio.src = ""; clipAudio = null; }
   clipsByIndex.clear();
